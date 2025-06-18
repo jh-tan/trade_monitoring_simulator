@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:17.4-alpine
+    container_name: margin_db
+    environment:
+      POSTGRES_DB: ${DB_NAME:-margin_db}
+      POSTGRES_USER: ${DB_USER:-margin_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-margin_user} -d ${DB_NAME:-margin_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - margin_network
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: margin_backend
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${BACKEND_PORT:-3001}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-margin_db}
+      DB_USER: ${DB_USER:-margin_user}
+      DB_PASSWORD: ${DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      ALPHA_VANTAGE_API_KEY: ${ALPHA_VANTAGE_API_KEY}
+      TWELVE_DATA_API_KEY: ${TWELVE_DATA_API_KEY}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ENABLE_MARKET_UPDATES: ${ENABLE_MARKET_UPDATES:-true}
+      ENABLE_MARGIN_CHECKS: ${ENABLE_MARGIN_CHECKS:-true}
+      ENABLE_DATABASE_CLEANUP: ${ENABLE_DATABASE_CLEANUP:-true}
+      WS_HEARTBEAT_INTERVAL: ${WS_HEARTBEAT_INTERVAL:-30000}
+      WS_HEARTBEAT_TIMEOUT: ${WS_HEARTBEAT_TIMEOUT:-60000}
+      RATE_LIMIT: ${RATE_LIMIT:-100}
+    ports:
+      - "${BACKEND_PORT:-3001}:${BACKEND_PORT:-3001}"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    restart: unless-stopped
+    networks:
+      - margin_network
+    command: >
+      sh -c "
+        echo 'Waiting for database...' &&
+        sleep 10 &&
+        echo 'Running migrations...' &&
+        npm run migrate &&
+        echo 'Running seeds...' &&
+        npm run seed &&
+        echo 'Starting application...' &&
+        npm start
+      "
+
+  # Frontend React App
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: margin_frontend
+    environment:
+      REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:3000/api}
+      REACT_APP_WS_URL: ${REACT_APP_WS_URL:-ws://localhost:3000}
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - margin_network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  margin_network:
+    driver: bridge
